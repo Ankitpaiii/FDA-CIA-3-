@@ -215,14 +215,18 @@ def create_nb():
             "cell_type": "markdown",
             "metadata": {},
             "source": [
-                "### 7. Publication-Quality Visualizations\n",
-                "We display the 6 generated diagnostic plots:\n",
+                "### 7. Publication-Quality Visualizations & Interpretability\n",
+                "We display the 10 generated diagnostic and interpretability plots:\n",
                 "1. Training vs Validation Loss Curves (Convergence & Early Stopping)\n",
                 "2. Actual vs Predicted Price Trajectory on Held-Out Test Data\n",
-                "3. Residual Error Distributions\n",
-                "4. Multi-Metric Performance Comparison Bar Charts\n",
-                "5. Technical Indicators & Historical Moving Average Overlay\n",
-                "6. Feature Correlation Heatmap"
+                "3. Residual Error Distributions & Q-Q Plots\n",
+                "4. Multi-Metric Performance Comparison Bar Charts (RMSE, MAE, MAPE, R², DA, Theil-U)\n",
+                "5. Technical Indicators & Historical Moving Average Overlay (Price, BB, RSI, Volatility)\n",
+                "6. Feature Correlation Heatmap (Top Technical Drivers)\n",
+                "7. Attention Weight Heatmap (LSTM Interpretability across Lookback Window)\n",
+                "8. Permutation Feature Importance (Top Predictors by Permutation RMSE Impact)\n",
+                "9. Rolling 20-Day MAE Error Over Time (Regime Analysis)\n",
+                "10. Strategy Profit Simulation (Cumulative Long/Short PnL vs Buy & Hold Benchmark)"
             ]
         },
         {
@@ -232,7 +236,13 @@ def create_nb():
             "outputs": [],
             "source": [
                 "from IPython.display import Image, display\n",
-                "for plot_name in ['loss_curves.png', 'predictions.png', 'residuals.png', 'metrics_comparison.png', 'price_ma_chart.png', 'feature_heatmap.png']:\n",
+                "plots = [\n",
+                "    'loss_curves.png', 'predictions.png', 'residuals.png',\n",
+                "    'metrics_comparison.png', 'price_ma_chart.png', 'feature_heatmap.png',\n",
+                "    'attention_heatmap.png', 'feature_importance.png',\n",
+                "    'error_over_time.png', 'profit_simulation.png'\n",
+                "]\n",
+                "for plot_name in plots:\n",
                 "    path = os.path.join('outputs', 'plots', plot_name)\n",
                 "    if os.path.exists(path):\n",
                 "        print(f'=== Plot: {plot_name} ===')\n",

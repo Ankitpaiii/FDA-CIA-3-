@@ -2,10 +2,11 @@
 lstm_model.py
 -------------
 Stacked Bidirectional LSTM with:
-  • Dropout + Recurrent Dropout for regularisation
-  • Attention pooling layer
-  • Residual connections between LSTM stacks
-  • Customisable architecture via config dict
+  • Input projection (Linear → LayerNorm → GELU)
+  • Dropout + Recurrent Dropout regularisation
+  • Bahdanau-style additive Attention Pooling
+  • Deeper regression head: (H*2) → 128 → 64 → 1
+  • Returns attention weights for interpretability / visualization
 """
 
 import torch
@@ -14,22 +15,36 @@ import torch.nn.functional as F
 
 
 # ─────────────────────────────────────────────
-# Attention Pooling
+# Attention Pooling (Bahdanau-style)
 # ─────────────────────────────────────────────
 
 class AttentionPooling(nn.Module):
     """
     Additive (Bahdanau-style) self-attention over the time dimension.
-    Collapses (B, T, H) → (B, H).
+
+    Collapses (B, T, H) → (B, H) by computing a weighted sum
+    where the weights reflect which time-steps are most relevant
+    for predicting the next price.
+
+    The returned attention weights (B, T) can be visualized as a
+    heatmap over the input window to understand model focus.
     """
     def __init__(self, hidden_dim: int):
         super().__init__()
-        self.attn = nn.Linear(hidden_dim, 1)
+        # Two-layer attention scorer for richer expressiveness
+        self.attn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.Tanh(),
+            nn.Linear(hidden_dim // 2, 1)
+        )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x : (B, T, H)
-        scores  = self.attn(x).squeeze(-1)        # (B, T)
-        weights = F.softmax(scores, dim=-1)        # (B, T)
+    def forward(self, x: torch.Tensor):
+        """
+        x       : (B, T, H)
+        returns : context (B, H), weights (B, T)
+        """
+        scores  = self.attn(x).squeeze(-1)           # (B, T)
+        weights = F.softmax(scores, dim=-1)           # (B, T) — sum to 1
         context = (weights.unsqueeze(-1) * x).sum(dim=1)  # (B, H)
         return context, weights
 
@@ -40,11 +55,19 @@ class AttentionPooling(nn.Module):
 
 class LSTMModel(nn.Module):
     """
-    Stacked Bidirectional LSTM for time-series regression.
+    Stacked Bidirectional LSTM for 1-step-ahead price regression.
+
+    Architecture
+    ------------
+    Input (B, T, F)
+      → Input Projection (Linear → LayerNorm → GELU)
+      → Stacked BiLSTM (num_layers, hidden_size per direction)
+      → Bahdanau Attention Pooling (B, T, H*2) → (B, H*2)
+      → Regression Head: H*2 → 128 → 64 → 1
 
     Parameters
     ----------
-    input_size    : number of features per time-step
+    input_size    : number of features per time-step (F)
     hidden_size   : LSTM hidden units per direction
     num_layers    : number of stacked LSTM layers
     dropout       : dropout probability between LSTM layers
@@ -62,62 +85,72 @@ class LSTMModel(nn.Module):
                  use_attention: bool  = True,
                  output_size:   int   = 1):
         super().__init__()
-        self.bidirectional = bidirectional
-        self.use_attention = use_attention
+        self.bidirectional  = bidirectional
+        self.use_attention  = use_attention
         self.num_directions = 2 if bidirectional else 1
         self.hidden_size    = hidden_size
 
-        # Input projection
+        # Input projection: maps raw features to LSTM hidden dimension
         self.input_proj = nn.Sequential(
             nn.Linear(input_size, hidden_size),
             nn.LayerNorm(hidden_size),
             nn.GELU()
         )
 
-        # Stacked LSTM
+        # Stacked Bidirectional LSTM
         self.lstm = nn.LSTM(
-            input_size  = hidden_size,
-            hidden_size = hidden_size,
-            num_layers  = num_layers,
-            batch_first = True,
-            dropout     = dropout if num_layers > 1 else 0.0,
+            input_size    = hidden_size,
+            hidden_size   = hidden_size,
+            num_layers    = num_layers,
+            batch_first   = True,
+            dropout       = dropout if num_layers > 1 else 0.0,
             bidirectional = bidirectional
         )
 
         lstm_out_dim = hidden_size * self.num_directions
 
-        # Attention (optional)
+        # Attention pooling (optional)
         if use_attention:
             self.attn_pool = AttentionPooling(lstm_out_dim)
 
-        # Regression head
+        # Deeper regression head for richer mapping
         self.head = nn.Sequential(
             nn.LayerNorm(lstm_out_dim),
             nn.Dropout(dropout),
-            nn.Linear(lstm_out_dim, 64),
+            nn.Linear(lstm_out_dim, 128),
             nn.GELU(),
             nn.Dropout(dropout / 2),
+            nn.Linear(128, 64),
+            nn.GELU(),
+            nn.Dropout(dropout / 4),
             nn.Linear(64, output_size)
         )
 
     def forward(self, x: torch.Tensor):
         """
         x : (B, T, input_size)
-        returns : (B, output_size)  — predicted value(s)
-                  attn_weights if use_attention else None
-        """
-        # Project input to hidden_size
-        x = self.input_proj(x)                    # (B, T, H)
 
-        out, _ = self.lstm(x)                     # (B, T, H*D)
+        Returns
+        -------
+        pred         : (B, output_size) — predicted price(s)
+        attn_weights : (B, T) — attention over time, or None
+        """
+        # Residual anchor: last observed Close price (feature index 0)
+        last_close = x[:, -1, 0:1]
+
+        # Project input to hidden dimension
+        h = self.input_proj(x)         # (B, T, H)
+        out, _ = self.lstm(h)          # (B, T, H * num_directions)
 
         if self.use_attention:
-            context, attn_w = self.attn_pool(out) # (B, H*D)
-            pred = self.head(context)
+            context, attn_w = self.attn_pool(out)   # (B, H*D), (B, T)
+            delta = self.head(context)
+            pred = last_close + delta
             return pred, attn_w
         else:
-            context = out[:, -1, :]               # last timestep
-            pred = self.head(context)
+            context = out[:, -1, :]    # fallback: use last timestep
+            delta = self.head(context)
+            pred = last_close + delta
             return pred, None
 
 

@@ -1,0 +1,52 @@
+=================================================================
+  ML STOCK PRICE FORECASTING — CIA-3 PROJECT REPORT
+  Financial Data Analytics | SRM Institute of Science & Technology
+=================================================================
+
+  Run Configuration
+  Ticker                  : AAPL
+  Date Range              : 2015-01-01 to 2024-01-01
+  Lookback Window         : 60 trading days
+  Training Epochs         : 25
+  Batch Size              : 64
+  Learning Rate           : 0.001
+  Random Seed             : 42
+  Total Runtime           : 558.6s (9.3 min)
+
+  Feature Engineering
+  Total Features          : 51
+  Feature Names           : Close, Return_1d, Return_5d, Return_20d, LogReturn_1d, SMA_5, EMA_5, SMA_10, EMA_10, SMA_20...
+
+=================================================================
+  EVALUATION RESULTS SUMMARY
+=================================================================
+  Model                     RMSE     MAE   MAPE%  SMAPE%     R2    DA%  TheilU    Hit%
+  ---------------------------------------------------------------
+  baseline                 5.674   4.509   2.91%   2.87% 0.9121 51.38%  2.1854  51.38%
+  lstm                     3.714   2.862   1.84%   1.84% 0.9623 42.11%  1.4240  42.11%
+  transformer              3.720   2.866   1.84%   1.84% 0.9622 41.85%  1.4256  41.85%
+  ensemble                 4.522   3.683   2.30%   2.30% 0.9441 43.36%  1.7409  43.36%
+
+  Metric Interpretation Guide
+  RMSE / MAE   : prediction error in USD (lower = better)
+  MAPE / SMAPE : percentage error (lower = better)
+  R2           : 1.0 = perfect fit; 0.95+ = excellent
+  DA           : >55% = commercially relevant direction signal
+  Theil's U    : <1.0 = beats naive 'no change' prediction
+  Hit Rate     : % of long/short trades that were profitable
+
+  Output Files
+  outputs/plots/loss_curves.png        — Training loss history
+  outputs/plots/predictions.png        — Price forecast overlay
+  outputs/plots/residuals.png          — Error distribution + Q-Q
+  outputs/plots/metrics_comparison.png — All metrics bar chart
+  outputs/plots/price_ma_chart.png     — Technical analysis chart
+  outputs/plots/feature_heatmap.png    — Feature correlations
+  outputs/plots/attention_heatmap.png  — LSTM attention weights
+  outputs/plots/feature_importance.png — Permutation importance
+  outputs/plots/error_over_time.png    — Rolling MAE timeline
+  outputs/plots/profit_simulation.png  — Trading PnL simulation
+  outputs/metrics_summary.json         — All metrics (JSON)
+  outputs/training_log.csv             — Per-epoch loss history
+
+=================================================================

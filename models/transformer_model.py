@@ -1,31 +1,47 @@
 """
 transformer_model.py
 --------------------
-Temporal Fusion Transformer (TFT-lite) for stock price regression:
-  • Positional Encoding (sinusoidal)
-  • Multi-Head Self-Attention encoder blocks
-  • Feed-Forward sublayers with GELU + residual connections
-  • LayerNorm throughout
-  • Regression head
+Temporal Fusion Transformer (TFT-lite) for stock price regression.
+
+Architecture
+------------
+  • Input projection: Linear → LayerNorm
+  • Learnable positional encoding (trainable, adapts to financial data)
+    + sinusoidal fallback added to the learnable embed
+  • Learnable CLS token that aggregates sequence information
+  • Multi-Head Self-Attention encoder blocks (Pre-LayerNorm)
+  • Feed-Forward sublayers with GELU activation + residual connections
+  • Regression head on CLS token output
+
+Why learnable PE for financial data?
+  Sinusoidal PE assumes fixed periodic structure. Financial time series
+  has irregular seasonality, so a learned PE adapts more effectively.
 """
 
 import math
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 # ─────────────────────────────────────────────
-# Positional Encoding
+# Positional Encoding (Hybrid: learned + sinusoidal)
 # ─────────────────────────────────────────────
 
 class PositionalEncoding(nn.Module):
-    """Sinusoidal positional encoding (Vaswani et al., 2017)."""
+    """
+    Hybrid positional encoding combining:
+      1. Learnable position embeddings (adapt to data distribution)
+      2. Fixed sinusoidal base (provides initialisation structure)
+
+    The learnable component is initialized to zeros so training
+    starts from the sinusoidal baseline.
+    """
 
     def __init__(self, d_model: int, max_len: int = 512, dropout: float = 0.1):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
 
+        # Fixed sinusoidal encoding
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(
@@ -33,22 +49,32 @@ class PositionalEncoding(nn.Module):
             (-math.log(10000.0) / d_model)
         )
         pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0)          # (1, max_len, d_model)
-        self.register_buffer("pe", pe)
+        if d_model % 2 == 0:
+            pe[:, 1::2] = torch.cos(position * div_term)
+        else:
+            pe[:, 1::2] = torch.cos(position * div_term[:-1])
+        self.register_buffer("pe_fixed", pe.unsqueeze(0))  # (1, max_len, d_model)
+
+        # Learnable component (initialized to 0 → starts from sinusoidal)
+        self.pe_learned = nn.Parameter(torch.zeros(1, max_len, d_model))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x : (B, T, d_model)
-        x = x + self.pe[:, : x.size(1), :]
-        return self.dropout(x)
+        T = x.size(1)
+        pos = self.pe_fixed[:, :T, :] + self.pe_learned[:, :T, :]
+        return self.dropout(x + pos)
 
 
 # ─────────────────────────────────────────────
-# Transformer Encoder Block
+# Transformer Encoder Block (Pre-LN)
 # ─────────────────────────────────────────────
 
 class TransformerEncoderBlock(nn.Module):
-    """Single Transformer encoder block with Pre-LN."""
+    """
+    Single Transformer encoder block using Pre-LayerNorm.
+
+    Pre-LN is more stable than Post-LN for training deep networks
+    as it prevents gradient explosion in early training.
+    """
 
     def __init__(self, d_model: int, n_heads: int,
                  dim_ff: int, dropout: float = 0.1):
@@ -68,12 +94,13 @@ class TransformerEncoderBlock(nn.Module):
 
     def forward(self, x: torch.Tensor,
                 key_padding_mask=None) -> torch.Tensor:
-        # Pre-LN self-attention
-        normed = self.norm1(x)
+        # Pre-LN Multi-Head Self-Attention
+        normed   = self.norm1(x)
         attn_out, _ = self.attn(normed, normed, normed,
                                 key_padding_mask=key_padding_mask)
         x = x + attn_out
-        # Pre-LN feed-forward
+
+        # Pre-LN Feed-Forward
         x = x + self.ff(self.norm2(x))
         return x
 
@@ -88,13 +115,13 @@ class TransformerModel(nn.Module):
 
     Parameters
     ----------
-    input_size  : feature dimension per time-step
+    input_size  : feature dimension per time-step (F)
     d_model     : internal embedding dimension (must be divisible by n_heads)
     n_heads     : number of attention heads
     n_layers    : number of encoder blocks
-    dim_ff      : feed-forward inner dimension
+    dim_ff      : feed-forward inner dimension (typically 2×–4× d_model)
     dropout     : dropout probability
-    seq_len     : input sequence length (for CLS token)
+    seq_len     : input sequence length (for positional encoding)
     output_size : regression outputs (default 1)
     """
 
@@ -110,20 +137,22 @@ class TransformerModel(nn.Module):
         super().__init__()
         self.d_model = d_model
 
-        # Input projection
+        # Input projection + normalization
         self.input_proj = nn.Sequential(
             nn.Linear(input_size, d_model),
             nn.LayerNorm(d_model)
         )
 
-        # Learnable CLS token
+        # Learnable CLS token (sequence-level aggregator)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
         nn.init.trunc_normal_(self.cls_token, std=0.02)
 
+        # Hybrid positional encoding (learned + sinusoidal)
         self.pos_enc = PositionalEncoding(d_model,
                                           max_len=seq_len + 1,
                                           dropout=dropout)
 
+        # Stacked encoder blocks
         self.encoder_blocks = nn.ModuleList([
             TransformerEncoderBlock(d_model, n_heads, dim_ff, dropout)
             for _ in range(n_layers)
@@ -136,28 +165,38 @@ class TransformerModel(nn.Module):
             nn.Linear(d_model, 64),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(64, output_size)
+            nn.Linear(64, 32),
+            nn.GELU(),
+            nn.Linear(32, output_size)
         )
 
     def forward(self, x: torch.Tensor):
         """
         x : (B, T, input_size)
-        returns : (B, output_size)
+
+        Returns
+        -------
+        pred : (B, output_size)
+        None : (no separate attention weights returned)
         """
         B = x.size(0)
-        x = self.input_proj(x)                        # (B, T, d_model)
+        # Residual anchor: last observed Close price (feature index 0)
+        last_close = x[:, -1, 0:1]
 
-        # Prepend CLS token
-        cls = self.cls_token.expand(B, -1, -1)         # (B, 1, d_model)
-        x   = torch.cat([cls, x], dim=1)               # (B, T+1, d_model)
-        x   = self.pos_enc(x)
+        h = self.input_proj(x)                    # (B, T, d_model)
+
+        # Prepend CLS token to sequence
+        cls = self.cls_token.expand(B, -1, -1)    # (B, 1, d_model)
+        h   = torch.cat([cls, h], dim=1)          # (B, T+1, d_model)
+        h   = self.pos_enc(h)
 
         for block in self.encoder_blocks:
-            x = block(x)
+            h = block(h)
 
-        x = self.norm(x)
-        cls_out = x[:, 0, :]                           # (B, d_model) – CLS token
-        return self.head(cls_out), None                 # None = no separate attn
+        h = self.norm(h)
+        cls_out = h[:, 0, :]                       # (B, d_model) — CLS token
+        delta = self.head(cls_out)
+        return last_close + delta, None
 
 
 # ─────────────────────────────────────────────
@@ -165,13 +204,14 @@ class TransformerModel(nn.Module):
 # ─────────────────────────────────────────────
 
 def build_transformer(config: dict) -> TransformerModel:
+    """Build a TransformerModel from a flat config dictionary."""
     return TransformerModel(
         input_size  = config["input_size"],
-        d_model     = config.get("d_model",      128),
-        n_heads     = config.get("n_heads",        8),
-        n_layers    = config.get("n_layers",       4),
-        dim_ff      = config.get("dim_ff",       256),
-        dropout     = config.get("dropout",      0.1),
-        seq_len     = config.get("seq_len",       60),
-        output_size = config.get("output_size",    1),
+        d_model     = config.get("d_model",     128),
+        n_heads     = config.get("n_heads",       8),
+        n_layers    = config.get("n_layers",      4),
+        dim_ff      = config.get("dim_ff",      256),
+        dropout     = config.get("dropout",     0.1),
+        seq_len     = config.get("seq_len",      60),
+        output_size = config.get("output_size",   1),
     )

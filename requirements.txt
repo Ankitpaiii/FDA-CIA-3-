@@ -1,21 +1,23 @@
 # ─────────────────────────────────────────────────────────────────
-#  Stock Price Forecasting – Project Requirements
+#  Stock Price Forecasting — Project Requirements
+#  FDA-601 CIA-3 Component 2
 # ─────────────────────────────────────────────────────────────────
 
-# Core
+# Core Scientific Stack
 numpy>=1.24.0
 pandas>=2.0.0
 scikit-learn>=1.3.0
+scipy>=1.11.0          # for Q-Q plots and statistical tests in residuals
 
-# Data
+# Financial Data
 yfinance>=0.2.40
 
 # Deep Learning
 torch>=2.1.0
 
-# Visualisation
+# Visualization
 matplotlib>=3.7.0
-seaborn>=0.13.0      # optional – for feature heatmap
+seaborn>=0.13.0        # for feature correlation heatmap
 
 # Utilities
 tqdm>=4.66.0
