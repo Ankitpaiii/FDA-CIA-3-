@@ -1,4 +1,4 @@
-# Financial Data Analytics (FDA-601) — Component 3: Project Implementation
+# Financial Data Analytics :  Project Implementation
 ## Multi-Horizon Stock Price Forecasting via BiLSTM-Attention, Temporal Fusion Transformers, and Residual Stacking Ensembles
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
